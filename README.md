@@ -242,7 +242,4 @@ Jay Lord – For the motivation to properly document my work
 
 
 
-Help with the commit messages or GitHub setup?
-
-
 
