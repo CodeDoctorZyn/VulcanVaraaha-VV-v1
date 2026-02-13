@@ -19,6 +19,16 @@ Cost-Effective Design – 3D-printed PLA frame reduces weight and production cos
 
 User-Friendly Interface – Web-based monitoring and control
 
+## Motivation 
+
+As someone with a pure software background during my undergraduate studies, this project felt like venturing into no-man's land. Every conversation—whether with peers or mentors—revealed the same concerns: tight timelines, limited resources, and my own skill gaps at the
+time.
+Building a drone from scratch meant stepping far outside my comfort zone. I had to wrestle with:
+Hardware I didn't understand – Soldering components, debugging circuit boards, and praying the magic smoke wouldn't escape
+Embedded systems I'd never touched – Writing C++ for microcontrollers when Python was my safe space
+Physics I hadn't considered – Weight distribution, thrust-to-weight ratios, aerodynamics—concepts that don't exist in a code editor
+Failures I couldn't debug with a print statement – When the drone wouldn't lift off, there was no console log to check
+
 This project represents my curiosity-driven approach to solving real-world problems:
 
 How can we make drone technology accessible? → By building a cost-effective alternative to expensive commercial drones
@@ -46,7 +56,19 @@ How can data be useful in real-time? → By integrating cloud platforms for live
 │                 │     │                  │     │                 │
 └─────────────────┘     └──────────────────┘     └─────────────────┘
 
-
+## Hardware Components
+| Component | Specification | Purpose |
+|-----------|---------------|---------|
+| **Flight Controller** | Custom-built | Drone stabilization & control |
+| **ESP32-CAM** | OV2640 camera, WiFi/BT | Video capture & streaming |
+| **NodeMCU (ESP8266)** | 80MHz CPU, WiFi | Sensor data processing |
+| **GPS Module** | NEO-6M | Location tracking |
+| **DHT11 Sensor** | Temperature/Humidity | Environmental monitoring |
+| **PIR Sensor** | Motion detection | Intrusion detection |
+| **Frame** | 3D-printed PLA | Lightweight, durable body |
+| **Motors** | Brushless (outrunner) | Efficient propulsion |
+| **ESCs** | Electronic Speed Controllers | Motor speed regulation |
+| **Battery** | LiPo | Power source |
 
 ## Software Stack
 
@@ -112,12 +134,17 @@ pip install -r requirements.txt
 
 ## Configuration
 1. WiFi Settings – Update SSID and password in both firmware files:
+
 const char* WIFI_SSID = "YOUR_NETWORK";
+
 const char* WIFI_PASS = "YOUR_PASSWORD";
 
-2. ThingSpeak – Create a channel and update API key:
+3. ThingSpeak – Create a channel and update API key:
+   
 const char* apiKey = "YOUR_API_KEY";
+
 const unsigned long channelID = YOUR_CHANNEL_ID;
+
 
 ## Usage
 1. Power On the System
