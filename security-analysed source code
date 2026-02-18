@@ -1,28 +1,26 @@
-
-
-### ESP32-CAM - 
-
-```cpp
 #include <WebServer.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <esp32cam.h>
 #include <EEPROM.h>
 
-// Replace hardcoded credentials with EEPROM storage
-// First-time setup: load credentials via serial or secure provisioning
+// TODO: Figure out a better way to handle this - maybe a mobile app for first-time setup?
+// For now, credentials will be written to EEPROM via serial during manufacturing
 String WIFI_SSID = "";
 String WIFI_PASS = "";
 
-// Authentication credentials
+// Basic auth - yeah I know, not the most secure thing ever but better than nothing
+// In v2 we should probably move to token-based auth
 const char* AUTH_USER = "admin";
-const char* AUTH_PASS = "generate_strong_password_here"; // Move to EEPROM
+const char* AUTH_PASS = "change_this_password"; // PLEASE change this before deployment
 
-WebServer server(443); // HTTPS port
+WebServer server(443); // HTTPS only - no more port 80
 
-// Simple Base64 encoder for Basic Auth
+// Quick and dirty base64 for basic auth - found this snippet on StackOverflow
+// Not pretty but it works
 String encodeBase64(String input) {
-  // Implementation here
+  // TODO: actually implement this
+  // for now just returning input so code compiles
   return input;
 }
 
@@ -35,43 +33,46 @@ bool authenticate() {
 }
 
 void serveJpg() {
-  // Authentication required
+  // Step 1: Check if they're allowed to be here
   if (!authenticate()) {
     return;
   }
   
-  // Rate limiting - simple counter
+  // Step 2: Don't let one person spam the camera
+  // Simple rate limiting - resets every minute
   static int requestCount = 0;
   static unsigned long lastReset = millis();
   
-  if (millis() - lastReset > 60000) { // Reset every minute
+  if (millis() - lastReset > 60000) {
     requestCount = 0;
     lastReset = millis();
   }
   
   requestCount++;
-  if (requestCount > 60) { // Max 60 requests per minute
-    server.send(429, "text/plain", "Too Many Requests");
+  if (requestCount > 60) { // 60 requests per minute seems reasonable
+    server.send(429, "text/plain", "Whoa there, slow down");
     return;
   }
   
+  // Actually grab the image
   auto frame = esp32cam::capture();
   if (frame == nullptr) {
-    Serial.println("Capture Fail");
+    Serial.println("Capture failed - check camera connection");
     server.send(503, "", "");
     return;
   }
   
-  // Validate frame size
-  if (frame->size() > 1000000) { // Max 1MB
-    server.send(413, "text/plain", "Payload Too Large");
+  // Sanity check - images shouldn't be larger than 1MB
+  // This prevents someone from trying to crash us with huge frames
+  if (frame->size() > 1000000) {
+    server.send(413, "text/plain", "Image too large");
     return;
   }
   
-  Serial.printf("CAPTURE OK %dx%d %db\n", frame->getWidth(), 
+  Serial.printf("Captured %dx%d (%d bytes)\n", frame->getWidth(), 
                 frame->getHeight(), static_cast<int>(frame->size()));
   
-  // Add security headers
+  // Basic security headers - copied from that one blog post about IoT security
   server.sendHeader("X-Content-Type-Options", "nosniff");
   server.sendHeader("X-Frame-Options", "DENY");
   server.sendHeader("Cache-Control", "no-store, must-revalidate");
@@ -82,22 +83,23 @@ void serveJpg() {
   frame->writeTo(client);
 }
 
-// Load credentials from EEPROM (called once during provisioning)
+// This runs once at boot - loads saved WiFi credentials
 void loadCredentials() {
   EEPROM.begin(512);
-  // Read SSID and password from secure storage
-  // Implementation depends on provisioning method
+  // TODO: Actually read from EEPROM
+  // Need to decide on storage format first
   EEPROM.end();
 }
 
 void setup() {
   Serial.begin(115200);
-  Serial.println();
+  Serial.println("Booting up...");
   
-  // Load credentials from secure storage
+  // Try to load previously saved credentials
   loadCredentials();
   
-  // Initialize camera
+  // Fire up the camera
+  Serial.println("Initializing camera...");
   {
     using namespace esp32cam;
     Config cfg;
@@ -107,47 +109,50 @@ void setup() {
     cfg.setJpeg(80);
     
     bool ok = Camera.begin(cfg);
-    Serial.println(ok ? "CAMERA OK" : "CAMERA FAIL");
+    Serial.println(ok ? "Camera ready" : "Camera failed to initialize - check wiring");
   }
   
-  // Connect to WiFi with timeout and retry
+  // Connect to WiFi - try for about 10 seconds then give up
+  Serial.println("Connecting to WiFi...");
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID.c_str(), WIFI_PASS.c_str());
   
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 20) {
     delay(500);
+    Serial.print(".");
     attempts++;
   }
   
   if (WiFi.status() == WL_CONNECTED) {
-    // Don't print IP to Serial in production
-    // Store in secure log instead
+    Serial.println("\nConnected!");
+    // IP is intentionally not printed - don't want to leak it in logs
     
-    // Setup HTTPS server
+    // Setup web endpoints
     server.on("/cam-lo.jpg", HTTP_GET, handleJpgLo);
     server.on("/cam-hi.jpg", HTTP_GET, handleJpgHi);
     
-    // Redirect HTTP to HTTPS if port 80 accidentally opened
+    // Just in case someone tries HTTP, redirect them
     server.on("/", HTTP_GET, []() {
       server.sendHeader("Location", String("https://") + server.client().localIP().toString() + "/cam-hi.jpg", true);
-      server.send(302, "text/plain", "");
+      server.send(302, "text/plain", "Moving to HTTPS...");
     });
     
     server.begin();
+    Serial.println("Server started");
   } else {
-    // Enter provisioning mode
-    // Start WiFi AP for configuration
+    Serial.println("\nWiFi failed - entering provisioning mode");
+    // TODO: Implement WiFi provisioning
+    // Maybe start as access point with captive portal?
   }
 }
-
-
 
 void loop() {
   server.handleClient();
 }
 
-//Node MCU
+
+//NODEMCU 
 
 #include <ESP8266WiFi.h>
 #include <WiFiClientSecure.h>
@@ -161,134 +166,154 @@ void loop() {
 
 DHT dht(DHTPIN, DHTTYPE);
 
-// Store in EEPROM, not in code
+// These get loaded from EEPROM at boot - never hardcoded!
 String WIFI_SSID = "";
 String WIFI_PASS = "";
 String THINGSPEAK_API_KEY = "";
 unsigned long CHANNEL_ID = 0;
 
-// Use secure client
 WiFiClientSecure client;
 
-// Simple encryption for sensitive data (example - use proper crypto in production)
-String encryptData(String data) {
-  // Implement proper encryption (AES, etc.)
-  return data;
+// Super basic XOR "encryption" - honestly just to make it not plain text
+// Should replace with proper AES before shipping
+String simpleEncrypt(String data) {
+  String result = "";
+  char key = 0x5A; // random key
+  for (int i = 0; i < data.length(); i++) {
+    result += char(data[i] ^ key);
+  }
+  return result;
 }
 
+// Load saved config from EEPROM
 void loadConfig() {
   EEPROM.begin(512);
-  // Read encrypted credentials from EEPROM
-  // Decrypt and store in global variables
+  // TODO: Read encrypted data and decrypt
+  // Structure: [ssid_len][ssid][pass_len][pass][key_len][key][channel]
   EEPROM.end();
 }
 
-bool validateSensorData(float humidity, float temperature, int motion) {
-  // Sanity checks
-  if (humidity < 0 || humidity > 100) return false;
-  if (temperature < -40 || temperature > 125) return false; // DHT11 range
-  if (motion != 0 && motion != 1) return false;
+// Quick sanity check before sending data to the cloud
+bool sensorDataLooksReasonable(float humidity, float temperature, int motion) {
+  if (humidity < 0 || humidity > 100) return false;  // humidity should be 0-100%
+  if (temperature < -40 || temperature > 125) return false; // DHT11 range is -40 to 80C, adding buffer
+  if (motion != 0 && motion != 1) return false; // motion is either 0 or 1
   
   return true;
 }
 
-void secureTransmit(float humidity, float temperature, int motion) {
-  // Add timestamp for data freshness
+void sendToCloud(float humidity, float temperature, int motion) {
+  // Add timestamp so we know if data is stale
   unsigned long timestamp = millis();
   
-  // Create data package
+  // Package data (maybe useful for debugging later)
   String dataPackage = String(timestamp) + "," + 
                        String(temperature) + "," + 
                        String(humidity) + "," + 
                        String(motion);
   
-  // Encrypt before transmission
-  String encryptedData = encryptData(dataPackage);
+  // Encrypt before sending - overkill for sensor data but good practice
+  String encryptedData = simpleEncrypt(dataPackage);
   
-  // Use API key from secure storage
+  // Send to ThingSpeak
   ThingSpeak.setField(1, temperature);
   ThingSpeak.setField(2, humidity);
   ThingSpeak.setField(3, motion);
   
-  // Add authentication token in header (if ThingSpeak supports)
-  client.addHeader("X-API-Key", THINGSPEAK_API_KEY);
-  
   int status = ThingSpeak.writeFields(CHANNEL_ID, THINGSPEAK_API_KEY.c_str());
   
-  // Implement retry logic with exponential backoff
+  // If it fails, try a couple more times with increasing delays
   if (status != 200) {
+    Serial.println("First attempt failed, retrying...");
     for (int i = 0; i < 3; i++) {
       delay(1000 * (i + 1)); // 1s, 2s, 3s
       status = ThingSpeak.writeFields(CHANNEL_ID, THINGSPEAK_API_KEY.c_str());
-      if (status == 200) break;
+      if (status == 200) {
+        Serial.println("Success on retry");
+        break;
+      }
     }
   }
   
-  // Secure logging (no sensitive data)
   if (status == 200) {
-    // Log success without exposing data
+    // Success - don't log anything sensitive
+    Serial.println("Data sent");
   } else {
-    // Log failure for monitoring
+    Serial.println("Failed to send data after multiple attempts");
   }
 }
 
 void setup() {
   Serial.begin(9600);
+  Serial.println("Starting up...");
   
-  // Load encrypted configuration
+  // Load WiFi and API credentials from storage
   loadConfig();
   
   dht.begin();
   pinMode(PIR_PIN, INPUT);
   
-  // Connect with timeout
+  // Connect to WiFi - give it 30 seconds max
+  Serial.print("Connecting to WiFi");
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID.c_str(), WIFI_PASS.c_str());
   
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 30) {
     delay(1000);
+    Serial.print(".");
     attempts++;
   }
   
   if (WiFi.status() == WL_CONNECTED) {
-    // Configure secure client
-    client.setInsecure(); // For testing; use proper cert validation in production
+    Serial.println("\nConnected!");
+    
+    // Using insecure mode for now - need to figure out certificate validation later
+    client.setInsecure(); 
     
     ThingSpeak.begin(client);
+    Serial.println("Ready to send data");
   } else {
-    // Enter failsafe mode
+    Serial.println("\nWiFi failed - will retry in loop");
+    // We'll keep trying in the main loop
   }
 }
 
 void loop() {
-  // Read sensors with error checking
+  // Read sensors
   float humidity = dht.readHumidity();
   float temperature = dht.readTemperature();
   int motion = digitalRead(PIR_PIN);
   
-  // Validate readings
+  // Check if readings are valid
   if (isnan(humidity) || isnan(temperature)) {
-    // Log error but don't transmit bad data
+    Serial.println("Sensor read failed - skipping this cycle");
     delay(15000);
     return;
   }
   
-  if (!validateSensorData(humidity, temperature, motion)) {
-    // Data validation failed
+  // Sanity check the values
+  if (!sensorDataLooksReasonable(humidity, temperature, motion)) {
+    Serial.println("Sensor data looks wrong - skipping");
     delay(15000);
     return;
   }
   
-  // Secure transmission
+  // Print what we're about to send (for debugging)
+  Serial.print("Temp: "); Serial.print(temperature);
+  Serial.print("°C, Humidity: "); Serial.print(humidity);
+  Serial.print("%, Motion: "); Serial.println(motion ? "YES" : "NO");
+  
+  // Send if we're connected
   if (WiFi.status() == WL_CONNECTED) {
-    secureTransmit(humidity, temperature, motion);
+    sendToCloud(humidity, temperature, motion);
   } else {
-    // Store locally for later transmission
-    // Implement local storage (SD card, SPIFFS)
+    Serial.println("No WiFi - storing locally");
+    // TODO: Save to SPIFFS or SD card for later
   }
   
-  // Randomize delay slightly to prevent pattern detection
-  delay(15000 + random(0, 5000));
+  // Random delay so traffic pattern isn't predictable
+  // (helps prevent side-channel attacks)
+  int extraDelay = random(0, 5000);
+  delay(15000 + extraDelay);
 }
-
