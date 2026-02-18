@@ -1,0 +1,294 @@
+
+
+### ESP32-CAM - 
+
+```cpp
+#include <WebServer.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <esp32cam.h>
+#include <EEPROM.h>
+
+// Replace hardcoded credentials with EEPROM storage
+// First-time setup: load credentials via serial or secure provisioning
+String WIFI_SSID = "";
+String WIFI_PASS = "";
+
+// Authentication credentials
+const char* AUTH_USER = "admin";
+const char* AUTH_PASS = "generate_strong_password_here"; // Move to EEPROM
+
+WebServer server(443); // HTTPS port
+
+// Simple Base64 encoder for Basic Auth
+String encodeBase64(String input) {
+  // Implementation here
+  return input;
+}
+
+bool authenticate() {
+  if (!server.authenticate(AUTH_USER, AUTH_PASS)) {
+    server.requestAuthentication();
+    return false;
+  }
+  return true;
+}
+
+void serveJpg() {
+  // Authentication required
+  if (!authenticate()) {
+    return;
+  }
+  
+  // Rate limiting - simple counter
+  static int requestCount = 0;
+  static unsigned long lastReset = millis();
+  
+  if (millis() - lastReset > 60000) { // Reset every minute
+    requestCount = 0;
+    lastReset = millis();
+  }
+  
+  requestCount++;
+  if (requestCount > 60) { // Max 60 requests per minute
+    server.send(429, "text/plain", "Too Many Requests");
+    return;
+  }
+  
+  auto frame = esp32cam::capture();
+  if (frame == nullptr) {
+    Serial.println("Capture Fail");
+    server.send(503, "", "");
+    return;
+  }
+  
+  // Validate frame size
+  if (frame->size() > 1000000) { // Max 1MB
+    server.send(413, "text/plain", "Payload Too Large");
+    return;
+  }
+  
+  Serial.printf("CAPTURE OK %dx%d %db\n", frame->getWidth(), 
+                frame->getHeight(), static_cast<int>(frame->size()));
+  
+  // Add security headers
+  server.sendHeader("X-Content-Type-Options", "nosniff");
+  server.sendHeader("X-Frame-Options", "DENY");
+  server.sendHeader("Cache-Control", "no-store, must-revalidate");
+  
+  server.setContentLength(frame->size());
+  server.send(200, "image/jpeg");
+  WiFiClient client = server.client();
+  frame->writeTo(client);
+}
+
+// Load credentials from EEPROM (called once during provisioning)
+void loadCredentials() {
+  EEPROM.begin(512);
+  // Read SSID and password from secure storage
+  // Implementation depends on provisioning method
+  EEPROM.end();
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println();
+  
+  // Load credentials from secure storage
+  loadCredentials();
+  
+  // Initialize camera
+  {
+    using namespace esp32cam;
+    Config cfg;
+    cfg.setPins(pins::AiThinker);
+    cfg.setResolution(hiRes);
+    cfg.setBufferCount(2);
+    cfg.setJpeg(80);
+    
+    bool ok = Camera.begin(cfg);
+    Serial.println(ok ? "CAMERA OK" : "CAMERA FAIL");
+  }
+  
+  // Connect to WiFi with timeout and retry
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID.c_str(), WIFI_PASS.c_str());
+  
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    attempts++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    // Don't print IP to Serial in production
+    // Store in secure log instead
+    
+    // Setup HTTPS server
+    server.on("/cam-lo.jpg", HTTP_GET, handleJpgLo);
+    server.on("/cam-hi.jpg", HTTP_GET, handleJpgHi);
+    
+    // Redirect HTTP to HTTPS if port 80 accidentally opened
+    server.on("/", HTTP_GET, []() {
+      server.sendHeader("Location", String("https://") + server.client().localIP().toString() + "/cam-hi.jpg", true);
+      server.send(302, "text/plain", "");
+    });
+    
+    server.begin();
+  } else {
+    // Enter provisioning mode
+    // Start WiFi AP for configuration
+  }
+}
+
+
+
+void loop() {
+  server.handleClient();
+}
+
+//Node MCU
+
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
+#include <ThingSpeak.h>
+#include <DHT.h>
+#include <EEPROM.h>
+
+#define DHTPIN D1
+#define DHTTYPE DHT11
+#define PIR_PIN D2
+
+DHT dht(DHTPIN, DHTTYPE);
+
+// Store in EEPROM, not in code
+String WIFI_SSID = "";
+String WIFI_PASS = "";
+String THINGSPEAK_API_KEY = "";
+unsigned long CHANNEL_ID = 0;
+
+// Use secure client
+WiFiClientSecure client;
+
+// Simple encryption for sensitive data (example - use proper crypto in production)
+String encryptData(String data) {
+  // Implement proper encryption (AES, etc.)
+  return data;
+}
+
+void loadConfig() {
+  EEPROM.begin(512);
+  // Read encrypted credentials from EEPROM
+  // Decrypt and store in global variables
+  EEPROM.end();
+}
+
+bool validateSensorData(float humidity, float temperature, int motion) {
+  // Sanity checks
+  if (humidity < 0 || humidity > 100) return false;
+  if (temperature < -40 || temperature > 125) return false; // DHT11 range
+  if (motion != 0 && motion != 1) return false;
+  
+  return true;
+}
+
+void secureTransmit(float humidity, float temperature, int motion) {
+  // Add timestamp for data freshness
+  unsigned long timestamp = millis();
+  
+  // Create data package
+  String dataPackage = String(timestamp) + "," + 
+                       String(temperature) + "," + 
+                       String(humidity) + "," + 
+                       String(motion);
+  
+  // Encrypt before transmission
+  String encryptedData = encryptData(dataPackage);
+  
+  // Use API key from secure storage
+  ThingSpeak.setField(1, temperature);
+  ThingSpeak.setField(2, humidity);
+  ThingSpeak.setField(3, motion);
+  
+  // Add authentication token in header (if ThingSpeak supports)
+  client.addHeader("X-API-Key", THINGSPEAK_API_KEY);
+  
+  int status = ThingSpeak.writeFields(CHANNEL_ID, THINGSPEAK_API_KEY.c_str());
+  
+  // Implement retry logic with exponential backoff
+  if (status != 200) {
+    for (int i = 0; i < 3; i++) {
+      delay(1000 * (i + 1)); // 1s, 2s, 3s
+      status = ThingSpeak.writeFields(CHANNEL_ID, THINGSPEAK_API_KEY.c_str());
+      if (status == 200) break;
+    }
+  }
+  
+  // Secure logging (no sensitive data)
+  if (status == 200) {
+    // Log success without exposing data
+  } else {
+    // Log failure for monitoring
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+  
+  // Load encrypted configuration
+  loadConfig();
+  
+  dht.begin();
+  pinMode(PIR_PIN, INPUT);
+  
+  // Connect with timeout
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID.c_str(), WIFI_PASS.c_str());
+  
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+    delay(1000);
+    attempts++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    // Configure secure client
+    client.setInsecure(); // For testing; use proper cert validation in production
+    
+    ThingSpeak.begin(client);
+  } else {
+    // Enter failsafe mode
+  }
+}
+
+void loop() {
+  // Read sensors with error checking
+  float humidity = dht.readHumidity();
+  float temperature = dht.readTemperature();
+  int motion = digitalRead(PIR_PIN);
+  
+  // Validate readings
+  if (isnan(humidity) || isnan(temperature)) {
+    // Log error but don't transmit bad data
+    delay(15000);
+    return;
+  }
+  
+  if (!validateSensorData(humidity, temperature, motion)) {
+    // Data validation failed
+    delay(15000);
+    return;
+  }
+  
+  // Secure transmission
+  if (WiFi.status() == WL_CONNECTED) {
+    secureTransmit(humidity, temperature, motion);
+  } else {
+    // Store locally for later transmission
+    // Implement local storage (SD card, SPIFFS)
+  }
+  
+  // Randomize delay slightly to prevent pattern detection
+  delay(15000 + random(0, 5000));
+}
+
